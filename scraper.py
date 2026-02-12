@@ -1,13 +1,14 @@
-import re
+﻿import re
 import requests
+from requests import RequestException
 from bs4 import BeautifulSoup, FeatureNotFound
 from urllib.parse import urljoin
 
 BASE = "https://jahis.law.nagoya-u.ac.jp"
 
 _META_LINE_RE = re.compile(
-    r"^(法令データベース|日本研究のための歴史情報|本データベースについて|沿革|関連法規|リンク|審議経過|"
-    r"国立国会図書館.*|国立公文書館.*|日本法令索引|法令番号:?.*|公布年月日:?.*|法令の形式:?.*|公布:?.*|改正対象法令)$"
+    r"^(豕穂ｻ､繝・・繧ｿ繝吶・繧ｹ|譌･譛ｬ遐皮ｩｶ縺ｮ縺溘ａ縺ｮ豁ｴ蜿ｲ諠・ｱ|譛ｬ繝・・繧ｿ繝吶・繧ｹ縺ｫ縺､縺・※|豐ｿ髱ｩ|髢｢騾｣豕戊ｦ楯繝ｪ繝ｳ繧ｯ|蟇ｩ隴ｰ邨碁℃|"
+    r"蝗ｽ遶句嵜莨壼峙譖ｸ鬢ｨ.*|蝗ｽ遶句・譁・嶌鬢ｨ.*|譌･譛ｬ豕穂ｻ､邏｢蠑怖豕穂ｻ､逡ｪ蜿ｷ:?.*|蜈ｬ蟶・ｹｴ譛域律:?.*|豕穂ｻ､縺ｮ蠖｢蠑・?.*|蜈ｬ蟶・?.*|謾ｹ豁｣蟇ｾ雎｡豕穂ｻ､)$"
 )
 
 
@@ -17,7 +18,7 @@ def _clean_law_text(text: str) -> str:
         t = line.strip()
         if not t:
             continue
-        if t in {"-", "—", "―"}:
+        if t in {"-", "窶・", "窶・"}:
             continue
         if _META_LINE_RE.match(t):
             continue
@@ -25,14 +26,17 @@ def _clean_law_text(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def fetch_html(url: str) -> BeautifulSoup:
-    res = requests.get(url)
-    res.raise_for_status()
+def fetch_html(url: str):
     try:
-        return BeautifulSoup(res.content, "lxml")
-    except FeatureNotFound:
-        # Fallback to built-in parser when lxml isn't installed
-        return BeautifulSoup(res.content, "html.parser")
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+        try:
+            return BeautifulSoup(res.content, "lxml")
+        except FeatureNotFound:
+            # Fallback to built-in parser when lxml isn't installed
+            return BeautifulSoup(res.content, "html.parser")
+    except RequestException:
+        return None
 
 
 def get_law_history_items(law_url: str):
@@ -43,6 +47,8 @@ def get_law_history_items(law_url: str):
     soup = fetch_html(law_url)
 
     items = []
+    if soup is None:
+        return items
 
     history_section = soup.find(id="law-history") or soup.find(class_="law-history")
 
@@ -87,13 +93,118 @@ def get_law_history_items(law_url: str):
     return items
 
 
+def search_law_by_name(name: str):
+    """
+    Search law pages by name on the law database.
+    Returns list of {"title": str, "url": str}.
+    """
+    if not name:
+        return []
+
+    results = []
+
+    # 1) Try to discover a search form on the site
+    seed_urls = [f"{BASE}/lawdb", f"{BASE}/lawdb/", f"{BASE}/"]
+    for seed in seed_urls:
+        soup = fetch_html(seed)
+        if soup is None:
+            continue
+
+        for form in soup.find_all("form"):
+            action = form.get("action") or seed
+            method = (form.get("method") or "get").lower()
+            inputs = form.find_all("input")
+
+            text_input = None
+            params = {}
+            for inp in inputs:
+                itype = (inp.get("type") or "").lower()
+                name_attr = inp.get("name") or ""
+                value = inp.get("value") or ""
+                if itype in {"hidden"} and name_attr:
+                    params[name_attr] = value
+                if itype in {"text", "search"} and name_attr and text_input is None:
+                    text_input = name_attr
+
+            if text_input is None:
+                # fallback: pick a likely name
+                for inp in inputs:
+                    name_attr = (inp.get("name") or "").lower()
+                    if any(k in name_attr for k in ["keyword", "search", "query", "word", "free", "name"]):
+                        text_input = inp.get("name")
+                        break
+
+            if text_input is None:
+                continue
+
+            params[text_input] = name
+            target = urljoin(BASE, action)
+
+            try:
+                if method == "post":
+                    res = requests.post(target, data=params, timeout=10)
+                else:
+                    res = requests.get(target, params=params, timeout=10)
+                res.raise_for_status()
+                soup2 = BeautifulSoup(res.content, "lxml")
+            except Exception:
+                continue
+
+            for a in soup2.find_all("a", href=True):
+                href = a["href"]
+                text = (a.get_text() or "").strip()
+                if not href.startswith("/lawdb/l/"):
+                    continue
+                results.append({"title": text, "url": urljoin(BASE, href)})
+
+            if results:
+                break
+        if results:
+            break
+
+    # 2) Fallback: try common search endpoints
+    if not results:
+        candidates = [
+            f"{BASE}/lawdb/search?keyword={name}",
+            f"{BASE}/lawdb/search?key={name}",
+            f"{BASE}/lawdb/search?query={name}",
+            f"{BASE}/lawdb/search?word={name}",
+            f"{BASE}/lawdb/search?term={name}",
+            f"{BASE}/lawdb/search?search={name}",
+            f"{BASE}/lawdb/search?kw={name}",
+        ]
+        for url in candidates:
+            soup = fetch_html(url)
+            if soup is None:
+                continue
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                text = (a.get_text() or "").strip()
+                if not href.startswith("/lawdb/l/"):
+                    continue
+                results.append({"title": text, "url": urljoin(BASE, href)})
+            if results:
+                break
+
+    # de-dup by url
+    seen = set()
+    uniq = []
+    for r in results:
+        if r["url"] in seen:
+            continue
+        seen.add(r["url"])
+        uniq.append(r)
+    return uniq
+
+
 def fetch_law_text(url: str) -> str:
     """
-    改正法令ページの本文を取得
+    法令データベースページの本文を取得
     """
     soup = fetch_html(url)
+    if soup is None:
+        return ""
 
-    # 名古屋大学DB本文領域（構造差異に備えて複数候補）
     candidates = [
         soup.find(id="law-body-original"),
         soup.find(id="law-body-wrap"),
@@ -101,7 +212,7 @@ def fetch_law_text(url: str) -> str:
         soup.find(id="law-body"),
         soup.find(class_="law-body"),
         soup.find("div", {"class": "Main"}),
-        soup
+        soup,
     ]
 
     for c in candidates:
@@ -117,6 +228,8 @@ def get_law_name(url: str):
     法令名をページから抽出する。見つからなければ None を返す。
     """
     soup = fetch_html(url)
+    if soup is None:
+        return None
 
     candidates = [
         soup.find("h1"),
@@ -135,7 +248,6 @@ def get_law_name(url: str):
 
     title = soup.title.string.strip() if soup.title and soup.title.string else ""
     if title:
-        # Remove common site suffixes
         for sep in [" | ", " - ", " ｜ ", " － "]:
             if sep in title:
                 return title.split(sep)[0].strip()
@@ -152,6 +264,8 @@ def get_law_era_year(url: str):
     法令の年号（例: 平成9年, 令和元年）を抽出する。見つからなければ None。
     """
     soup = fetch_html(url)
+    if soup is None:
+        return None
 
     candidates = []
     for c in [
@@ -170,7 +284,6 @@ def get_law_era_year(url: str):
     if soup.title and soup.title.string:
         candidates.append(soup.title.string.strip())
 
-    # 最後に全体テキストを候補として使う（重いので最後）
     candidates.append(soup.get_text(" ", strip=True))
 
     for text in candidates:
@@ -186,6 +299,8 @@ def get_law_header_info(url: str):
     Extract title, law number, and promulgate date from the law page header.
     """
     soup = fetch_html(url)
+    if soup is None:
+        return {"title": "", "num": "", "promulgate": ""}
 
     title = ""
     num = ""
@@ -229,6 +344,8 @@ def get_amendment_anchors(url: str, amendment_blocks):
     that has id/name, or a parent with id. Returns None for not found.
     """
     soup = fetch_html(url)
+    if soup is None:
+        return []
 
     tags = ["a", "span", "div", "p", "li", "h1", "h2", "h3", "h4", "h5", "h6"]
     candidates = []

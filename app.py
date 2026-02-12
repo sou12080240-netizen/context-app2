@@ -9,8 +9,9 @@ from scraper import (
     get_law_name,
     get_law_era_year,
     get_law_header_info,
+    search_law_by_name,
 )
-from parser import extract_amendment_blocks, is_full_amendment
+from parser import extract_amendment_blocks, is_full_amendment, summarize_amendment
 
 try:
     import fitz  # PyMuPDF
@@ -21,10 +22,21 @@ st.set_page_config(layout="wide")
 
 st.title("法令データベース拡張機能")
 
-law_url = st.text_input(
-    "法令URL",
-    "https://jahis.law.nagoya-u.ac.jp/lawdb/l/320i0719"
-)
+query = st.text_input("法令URLまたは法令名", "")
+
+selected_candidate = None
+if st.session_state.get("search_results"):
+    options = st.session_state["search_results"]
+    labels = [f"{r['title']} ({r['url']})" for r in options]
+    st.info("候補が複数あります。候補から選択して再度「解析開始」を押してください。")
+    for i, label in enumerate(labels, start=1):
+        if st.button(f"{i}. {label}", key=f"cand_{i}"):
+            st.session_state.selected_url = options[i - 1]["url"]
+            st.session_state.run = True
+            st.session_state.search_results = []
+            st.rerun()
+    chosen = st.selectbox("法令候補（手動選択）", labels)
+    selected_candidate = options[labels.index(chosen)]["url"]
 
 def fetch_wikipedia(term):
     try:
@@ -103,11 +115,38 @@ def build_pdf_bytes(title: str, text: str):
 
 
 if st.button("解析開始"):
+    law_url = ""
+    law_name = ""
+    if query:
+        if query.strip().lower().startswith(("http://", "https://")):
+            law_url = query.strip()
+        else:
+            law_name = query.strip()
+
+    if not law_url and law_name:
+        if selected_candidate:
+            law_url = selected_candidate
+        else:
+            results = search_law_by_name(law_name)
+            if not results:
+                st.error("法令名からURLを見つけられませんでした。法令URLを直接入力してください。")
+                st.stop()
+            st.session_state.search_results = results
+            if len(results) == 1:
+                law_url = results[0]["url"]
+            else:
+                st.stop()
+
     st.session_state.run = True
-    st.session_state.last_url = law_url
+    st.session_state.selected_url = law_url
 
     history_items = get_law_history_items(law_url)
     target_law_name = get_law_name(law_url)
+    if not history_items:
+        st.session_state.records = []
+        st.session_state.target_law_name = target_law_name
+        st.error("法令データベースに接続できませんでした。ネットワーク/DNSを確認して再試行してください。")
+        st.stop()
     target_header = get_law_header_info(law_url)
 
     records = []
@@ -133,6 +172,46 @@ if st.button("解析開始"):
     st.session_state.target_header = target_header
 
 if "run" in st.session_state and st.session_state.get("run"):
+    # 実際に解析するURL
+    active_url = st.session_state.get("selected_url") or law_url
+
+    # 未解析、またはURLが変わったら再解析
+    if (
+        st.session_state.get("last_url") != active_url
+        or "records" not in st.session_state
+    ):
+        st.session_state.last_url = active_url
+
+        history_items = get_law_history_items(active_url)
+        target_law_name = get_law_name(active_url)
+        if not history_items:
+            st.session_state.records = []
+            st.session_state.target_law_name = target_law_name
+            st.error("法令データベースに接続できませんでした。ネットワーク/DNSを確認して再試行してください。")
+            st.stop()
+        target_header = get_law_header_info(active_url)
+
+        records = []
+        for item in history_items:
+            text = fetch_law_text(item["url"])
+            amendments = extract_amendment_blocks(text)
+
+            records.append({
+                "era": get_law_era_year(item["url"]),
+                "title": item.get("title") or "",
+                "url": item["url"],
+                "text": text,
+                "amendments": amendments,
+                "kind": item.get("kind") or "",
+                "header": get_law_header_info(item["url"]),
+            })
+
+        records.sort(key=lambda x: x["era"] or "")
+
+        st.session_state.records = records
+        st.session_state.target_law_name = target_law_name
+        st.session_state.target_header = target_header
+
     records = st.session_state.get("records", [])
     target_law_name = st.session_state.get("target_law_name")
     target_header = st.session_state.get("target_header", {})
@@ -155,7 +234,7 @@ if "run" in st.session_state and st.session_state.get("run"):
             unsafe_allow_html=True,
         )
         # 目的の法令本文の取得とダウンロード
-        target_text = fetch_law_text(st.session_state.get("last_url", law_url))
+        target_text = fetch_law_text(st.session_state.get("last_url"))
         if target_text:
             st.download_button(
                 "テキストでダウンロード",
@@ -230,6 +309,8 @@ if "run" in st.session_state and st.session_state.get("run"):
                     for a in filtered:
                         lines = a.splitlines()
                         preview = "\n".join(lines[:10])
+                        summary = summarize_amendment(a)
+                        st.info(f"要約: {summary}")
                         st.markdown(
                             f"<pre style='white-space: pre-wrap; word-break: break-word; margin: 0;'>{preview}</pre>",
                             unsafe_allow_html=True,

@@ -49,3 +49,24 @@ def is_full_amendment(text: str) -> bool:
     if "一部を次のように改正する" in text or "の一部を次のように改正する" in text:
         return False
     return False
+
+
+def summarize_amendment(text: str) -> str:
+    """
+    Simple rule-based summary for amendment blocks.
+    """
+    if not text:
+        return "内容変更を伴う改正。"
+
+    t = re.sub(r"\s+", " ", text)
+
+    if "削除" in t or "削る" in t:
+        return "条文を削除した改正。"
+    if "追加" in t or "加える" in t or "新設" in t:
+        return "新たな規定を追加した改正。"
+    if "改める" in t or "改正" in t:
+        return "文言の変更を行った改正。"
+    if "全部改正" in t or "全文改正" in t:
+        return "法律全体を全面的に改正。"
+
+    return "内容変更を伴う改正。"
