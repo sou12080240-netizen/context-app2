@@ -181,6 +181,35 @@ def get_law_era_year(url: str):
     return None
 
 
+def get_law_header_info(url: str):
+    """
+    Extract title, law number, and promulgate date from the law page header.
+    """
+    soup = fetch_html(url)
+
+    title = ""
+    num = ""
+    promulgate = ""
+
+    title_tag = soup.find("div", class_="title fw-bold")
+    if title_tag:
+        title = title_tag.get_text(strip=True)
+    else:
+        h1 = soup.find("h1")
+        if h1:
+            title = h1.get_text(strip=True)
+
+    num_tag = soup.find("div", class_="num")
+    if num_tag:
+        num = num_tag.get_text(" ", strip=True).replace("法令番号:", "").strip()
+
+    prom_tag = soup.find("div", class_="promulgate")
+    if prom_tag:
+        promulgate = prom_tag.get_text(" ", strip=True).replace("公布年月日:", "").strip()
+
+    return {"title": title, "num": num, "promulgate": promulgate}
+
+
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
