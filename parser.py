@@ -36,3 +36,16 @@ def extract_amendment_blocks(text: str):
             results.append(block.strip())
 
     return results
+
+
+def is_full_amendment(text: str) -> bool:
+    """
+    Best-effort detection for full amendments (全文改正).
+    """
+    if not text:
+        return False
+    if "全部を改正する" in text or "全文改正" in text:
+        return True
+    if "一部を次のように改正する" in text or "の一部を次のように改正する" in text:
+        return False
+    return False

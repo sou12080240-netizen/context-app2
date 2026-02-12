@@ -2,7 +2,7 @@
 import requests
 from urllib.parse import quote
 from scraper import get_law_history_items, fetch_law_text, get_law_name, get_law_era_year
-from parser import extract_amendment_blocks
+from parser import extract_amendment_blocks, is_full_amendment
 
 st.set_page_config(layout="wide")
 
@@ -21,6 +21,15 @@ def fetch_wikipedia(term):
             return r.json()
     except Exception:
         return None
+
+
+def build_egov_search_link(law_name: str):
+    if not law_name:
+        return None
+    return (
+        "https://elaws.e-gov.go.jp/search/elawsSearch/"
+        f"elaws_search/lsg0500/search?keyword={quote(law_name)}"
+    )
 
 if st.button("解析開始"):
     history_items = get_law_history_items(law_url)
@@ -51,15 +60,17 @@ if st.button("解析開始"):
     col1, col2 = st.columns([3, 1])
 
     with col1:
-        st.write(f"履歴リンク数: {len(records)}")
+        timeline = [f"{r['era']}　{r['title']}" for r in records if r["era"]]
+        if timeline:
+            st.subheader("改正年表")
+            st.text("\n".join(timeline))
+            st.divider()
+
         for rec in records:
             kind_label = f"{rec['kind']}：" if rec["kind"] else ""
             st.subheader(rec["era"] or "年不明")
             st.caption(f"{kind_label}{rec['title']}")
-            st.markdown(
-                f"[法令DBを開く]({rec['url']}){{:target=\"_blank\"}}",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"[法令DBを開く]({rec['url']})")
 
             if rec["amendments"]:
                 if target_law_name:
@@ -71,18 +82,28 @@ if st.button("解析開始"):
                     for a in filtered:
                         lines = a.splitlines()
                         preview = "\n".join(lines[:10])
-                        st.code(preview, language="text")
+                        st.markdown(
+                            f"<pre style='white-space: pre-wrap; word-break: break-word; margin: 0;'>{preview}</pre>",
+                            unsafe_allow_html=True,
+                        )
                         if len(lines) > 10:
                             with st.expander("全文を表示"):
-                                st.code(a, language="text")
+                                st.markdown(
+                                    f"<pre style='white-space: pre-wrap; word-break: break-word; margin: 0;'>{a}</pre>",
+                                    unsafe_allow_html=True,
+                                )
                 else:
                     st.info("対象法令名が含まれる条文が見つかりませんでした。")
             else:
-                st.info("全文改正型（改正条文なし）")
+                if is_full_amendment(rec["text"]):
+                    st.error("制度転換（LEGAL RESET / 全文改正）")
+                else:
+                    st.info("改正指示なし")
                 preview = "\n".join(rec["text"].splitlines()[:10])
-                st.text(preview)
-                with st.expander("全文を表示"):
-                    st.text(rec["text"])
+                with st.container(border=True):
+                    st.text(preview)
+                    with st.expander("全文を表示"):
+                        st.text(rec["text"])
             st.divider()
 
     with col2:
@@ -99,5 +120,10 @@ if st.button("解析開始"):
             st.markdown(
                 f"[コトバンクで検索](https://kotobank.jp/word/{quote(target_law_name)})",
             )
+
+            egov = build_egov_search_link(target_law_name)
+            if egov:
+                st.subheader("現行法確認")
+                st.markdown(f"[e-Gov法令検索]({egov})")
         else:
             st.info("対象法令名が取得できないため、外部リンクを表示できません。")

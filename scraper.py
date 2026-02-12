@@ -5,6 +5,25 @@ from urllib.parse import urljoin
 
 BASE = "https://jahis.law.nagoya-u.ac.jp"
 
+_META_LINE_RE = re.compile(
+    r"^(法令データベース|日本研究のための歴史情報|本データベースについて|沿革|関連法規|リンク|審議経過|"
+    r"国立国会図書館.*|国立公文書館.*|日本法令索引|法令番号:?.*|公布年月日:?.*|法令の形式:?.*|公布:?.*|改正対象法令)$"
+)
+
+
+def _clean_law_text(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        t = line.strip()
+        if not t:
+            continue
+        if t in {"-", "—", "―"}:
+            continue
+        if _META_LINE_RE.match(t):
+            continue
+        lines.append(t)
+    return "\n".join(lines).strip()
+
 
 def fetch_html(url: str) -> BeautifulSoup:
     res = requests.get(url)
@@ -76,6 +95,9 @@ def fetch_law_text(url: str) -> str:
 
     # 名古屋大学DB本文領域（構造差異に備えて複数候補）
     candidates = [
+        soup.find(id="law-body-original"),
+        soup.find(id="law-body-wrap"),
+        soup.find(class_="PromulgateBody"),
         soup.find(id="law-body"),
         soup.find(class_="law-body"),
         soup.find("div", {"class": "Main"}),
@@ -84,9 +106,10 @@ def fetch_law_text(url: str) -> str:
 
     for c in candidates:
         if c:
-            return c.get_text("\n", strip=True)
+            text = c.get_text("\n", strip=True)
+            return _clean_law_text(text)
 
-    return soup.get_text("\n", strip=True)
+    return _clean_law_text(soup.get_text("\n", strip=True))
 
 
 def get_law_name(url: str):
