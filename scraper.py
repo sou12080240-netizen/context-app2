@@ -16,22 +16,37 @@ def fetch_html(url: str) -> BeautifulSoup:
         return BeautifulSoup(res.content, "html.parser")
 
 
-def get_law_history_links(law_url: str):
+def get_law_history_items(law_url: str):
     """
-    Extract history links from the law page.
+    Extract history items from the law page.
+    Each item: {"kind": "改正"/"廃止", "url": full_url, "title": link_text}
     """
     soup = fetch_html(law_url)
 
-    links = []
+    items = []
 
     history_section = soup.find(id="law-history") or soup.find(class_="law-history")
 
     if history_section is not None:
-        for a in history_section.find_all("a", href=True):
+        for li in history_section.find_all("li"):
+            kind = None
+            label = li.find("span")
+            if label:
+                kind = label.get_text(strip=True).replace(":", "").replace("：", "")
+            a = li.find("a", href=True)
+            if not a:
+                continue
             href = a["href"]
-            if href.startswith("/lawdb"):
-                links.append(urljoin(BASE, href))
-        return links
+            if not href.startswith("/lawdb"):
+                continue
+            items.append(
+                {
+                    "kind": kind or "",
+                    "url": urljoin(BASE, href),
+                    "title": a.get_text(strip=True),
+                }
+            )
+        return items
 
     # Fallback: scan all links for likely history URLs
     for a in soup.find_all("a", href=True):
@@ -41,11 +56,16 @@ def get_law_history_links(law_url: str):
         if not href.startswith("/lawdb"):
             continue
 
-        if "history" in href or "/lawdb/h" in href or "??" in text or "??" in text:
-            links.append(urljoin(BASE, href))
+        if "history" in href or "/lawdb/h" in href or "改正" in text or "廃止" in text:
+            items.append(
+                {
+                    "kind": "",
+                    "url": urljoin(BASE, href),
+                    "title": text,
+                }
+            )
 
-    # If nothing found, return empty list instead of raising
-    return links
+    return items
 
 
 def fetch_law_text(url: str) -> str:
