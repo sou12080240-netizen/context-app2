@@ -156,3 +156,50 @@ def get_law_era_year(url: str):
             return f"{m.group(1)}{m.group(2)}"
 
     return None
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _pick_anchor_text(block: str) -> str:
+    for line in block.splitlines():
+        t = line.strip()
+        if t:
+            return t
+    return block.strip()
+
+
+def get_amendment_anchors(url: str, amendment_blocks):
+    """
+    Return a list of fragment ids/names for each amendment block.
+    Best-effort: find an element containing a key phrase from the block
+    that has id/name, or a parent with id. Returns None for not found.
+    """
+    soup = fetch_html(url)
+
+    tags = ["a", "span", "div", "p", "li", "h1", "h2", "h3", "h4", "h5", "h6"]
+    candidates = []
+    for tag in soup.find_all(tags):
+        text = tag.get_text(" ", strip=True)
+        if not text:
+            continue
+        anchor = tag.get("id") or tag.get("name")
+        parent = tag.find_parent(attrs={"id": True})
+        parent_id = parent.get("id") if parent else None
+        candidates.append((text, anchor, parent_id))
+
+    results = []
+    for block in amendment_blocks:
+        key = _pick_anchor_text(block)
+        key = _normalize_text(key)[:60]
+        found = None
+        if key:
+            for text, anchor, parent_id in candidates:
+                if key and key in _normalize_text(text):
+                    found = anchor or parent_id
+                    if found:
+                        break
+        results.append(found)
+
+    return results

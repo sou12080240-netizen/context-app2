@@ -1,5 +1,14 @@
 ﻿import streamlit as st
-from scraper import get_law_history_items, fetch_law_text, get_law_name, get_law_era_year
+import json
+import re
+import streamlit.components.v1 as components
+from scraper import (
+    get_law_history_items,
+    fetch_law_text,
+    get_law_name,
+    get_law_era_year,
+    get_amendment_anchors,
+)
 from parser import extract_amendment_blocks
 
 st.set_page_config(layout="wide")
@@ -20,7 +29,7 @@ if st.button("改正を取得"):
         if target_law_name:
             st.caption(f"対象法令: {target_law_name}")
         else:
-            st.warning("対象法令名を取得できませんでした。全文改正型でない法令の絞り込みが不完全になる可能性があります。")
+            st.warning("対象法令名を取得できませんでした。部分改正型の絞り込みが不完全になる可能性があります。")
 
         st.write(f"履歴リンク数: {len(history_items)}")
 
@@ -28,17 +37,14 @@ if st.button("改正を取得"):
             link = item["url"]
             kind = item.get("kind") or ""
             title = item.get("title") or ""
-            st.divider()
             kind_label = f"{kind}：" if kind else ""
-            if title:
-                st.markdown(f"### 🔗 {kind_label}{title}")
-                st.caption(link)
-            else:
-                st.markdown(f"### 🔗 {kind_label}{link}")
+            label = f"{kind_label}{title}" if title else f"{kind_label}{link}"
 
             text = fetch_law_text(link)
 
             amendments = extract_amendment_blocks(text)
+            st.markdown(f"**{label}**")
+            st.divider()
 
             if amendments:
                 law_name = get_law_name(link)
@@ -55,7 +61,28 @@ if st.button("改正を取得"):
                     filtered = amendments
 
                 if filtered:
-                    for a in filtered:
+                    anchors = get_amendment_anchors(link, filtered)
+                    for idx, a in enumerate(filtered, start=1):
+                        anchor = anchors[idx - 1] if idx - 1 < len(anchors) else None
+                        display_link = f"{link}#{anchor}" if anchor else link
+                        query = a.strip()
+                        st.markdown(
+                            f"[改正箇所{idx}へ]({display_link}){{:target=\"_blank\"}}",
+                            unsafe_allow_html=True,
+                        )
+                        q = json.dumps(query)
+                        components.html(
+                            f"""
+                            <div style="display:flex;gap:8px;align-items:center;margin:6px 0 10px;">
+                              <button style="padding:6px 10px;border:1px solid #ccc;border-radius:6px;background:#fff;cursor:pointer;"
+                                onclick="navigator.clipboard.writeText({q}); this.innerText='コピー済み'; setTimeout(()=>this.innerText='コピー', 1200);">
+                                条文をコピー
+                              </button>
+                              <span style="font-size:12px;color:#333;">条文をクリップボードに保存します</span>
+                            </div>
+                            """,
+                            height=40,
+                        )
                         lines = a.splitlines()
                         preview = "\n".join(lines[:10])
                         st.code(preview, language="text")
