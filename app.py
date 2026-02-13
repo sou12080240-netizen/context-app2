@@ -80,18 +80,36 @@ def _wrap_jp_line(line: str, width: int):
     return [line[i:i + width] for i in range(0, len(line), width)]
 
 
-def build_pdf_bytes(title: str, text: str):
-    if fitz is None:
-        return None
+def _detect_font_file():
+    # Optional override for deployment (set env var to a bundled font path)
+    env_font = os.environ.get("LAW_PDF_FONT")
+    if env_font and os.path.exists(env_font):
+        return env_font
+
     font_candidates = [
+        # Bundled font (repo)
+        os.path.join("fonts", "meiryo.ttc"),
+        # Windows
         r"C:\Windows\Fonts\meiryo.ttc",
         r"C:\Windows\Fonts\msgothic.ttc",
         r"C:\Windows\Fonts\YuGothM.ttc",
         r"C:\Windows\Fonts\yugothm.ttc",
         r"C:\Windows\Fonts\YuMincho.ttc",
         r"C:\Windows\Fonts\yumin.ttf",
+        # Linux (common)
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
-    fontfile = next((p for p in font_candidates if os.path.exists(p)), None)
+    return next((p for p in font_candidates if os.path.exists(p)), None)
+
+
+def build_pdf_bytes(title: str, text: str):
+    if fitz is None:
+        return None
+    fontfile = _detect_font_file()
 
     doc = fitz.open()
     page = doc.new_page()
@@ -263,6 +281,8 @@ if "run" in st.session_state and st.session_state.get("run"):
                     file_name=f"{title or 'law'}.pdf",
                     mime="application/pdf",
                 )
+            else:
+                st.info("PDFは環境依存のフォントが見つからないため省略されました。")
 
     col1, col2 = st.columns([2.5, 1.5])
 
@@ -334,7 +354,7 @@ if "run" in st.session_state and st.session_state.get("run"):
                         mime="application/pdf",
                     )
                 else:
-                    st.info("PDF出力には PyMuPDF が必要です。requirements.txt に PyMuPDF を追加してください。")
+                    st.info("PDFは環境依存のフォントが見つからないため省略されました。")
 
             if rec["amendments"]:
                 if target_law_name:
