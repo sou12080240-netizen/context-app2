@@ -2,6 +2,8 @@
 import requests
 import os
 import textwrap
+import json
+import streamlit.components.v1 as components
 from urllib.parse import quote
 from scraper import (
     get_law_history_items,
@@ -11,7 +13,13 @@ from scraper import (
     get_law_header_info,
     search_law_by_name,
 )
-from parser import extract_amendment_blocks, is_full_amendment, summarize_amendment
+from parser import (
+    extract_amendment_blocks,
+    is_full_amendment,
+    era_to_year,
+    classify_amendment,
+    extract_article_numbers,
+)
 
 try:
     import fitz  # PyMuPDF
@@ -24,11 +32,21 @@ st.title("法令データベース拡張機能")
 
 query = st.text_input("法令URLまたは法令名", "")
 
+with st.expander("表示オプション", expanded=False):
+    use_year_filter = st.checkbox("改正年フィルタを使う", value=True)
+    use_kind_filter = st.checkbox("改正種別フィルタを使う", value=True)
+    expand_all = st.checkbox("全文を最初から展開", value=False)
+    show_copy_btn = st.checkbox("条文コピーを表示", value=True)
+    show_type_tag = st.checkbox("改正タイプを表示", value=True)
+    show_first_flag = st.checkbox("初出改正フラグを表示", value=True)
+    show_gap_info = st.checkbox("空白期間の表示", value=True)
+    show_density = st.checkbox("改正密度インジケータ", value=True)
+
 selected_candidate = None
 if st.session_state.get("search_results"):
     options = st.session_state["search_results"]
     labels = [f"{r['title']} ({r['url']})" for r in options]
-    st.info("候補が複数あります。候補から選択して再度「解析開始」を押してください。")
+    st.info("候補が複数あります。候補から選択して再度『解析開始』を押してください。")
     for i, label in enumerate(labels, start=1):
         if st.button(f"{i}. {label}", key=f"cand_{i}"):
             st.session_state.selected_url = options[i - 1]["url"]
@@ -37,6 +55,7 @@ if st.session_state.get("search_results"):
             st.rerun()
     chosen = st.selectbox("法令候補（手動選択）", labels)
     selected_candidate = options[labels.index(chosen)]["url"]
+
 
 def fetch_wikipedia(term):
     try:
@@ -137,45 +156,17 @@ if st.button("解析開始"):
             else:
                 st.stop()
 
+    if not law_url:
+        st.error("法令URLまたは法令名を入力してください。")
+        st.stop()
+
     st.session_state.run = True
     st.session_state.selected_url = law_url
 
-    history_items = get_law_history_items(law_url)
-    target_law_name = get_law_name(law_url)
-    if not history_items:
-        st.session_state.records = []
-        st.session_state.target_law_name = target_law_name
-        st.error("法令データベースに接続できませんでした。ネットワーク/DNSを確認して再試行してください。")
-        st.stop()
-    target_header = get_law_header_info(law_url)
-
-    records = []
-
-    for item in history_items:
-        text = fetch_law_text(item["url"])
-        amendments = extract_amendment_blocks(text)
-
-        records.append({
-            "era": get_law_era_year(item["url"]),
-            "title": item.get("title") or "",
-            "url": item["url"],
-            "text": text,
-            "amendments": amendments,
-            "kind": item.get("kind") or "",
-            "header": get_law_header_info(item["url"]),
-        })
-
-    records.sort(key=lambda x: x["era"] or "")
-
-    st.session_state.records = records
-    st.session_state.target_law_name = target_law_name
-    st.session_state.target_header = target_header
 
 if "run" in st.session_state and st.session_state.get("run"):
-    # 実際に解析するURL
-    active_url = st.session_state.get("selected_url") or law_url
+    active_url = st.session_state.get("selected_url")
 
-    # 未解析、またはURLが変わったら再解析
     if (
         st.session_state.get("last_url") != active_url
         or "records" not in st.session_state
@@ -216,6 +207,29 @@ if "run" in st.session_state and st.session_state.get("run"):
     target_law_name = st.session_state.get("target_law_name")
     target_header = st.session_state.get("target_header", {})
 
+    years = [era_to_year(r.get("era")) for r in records if era_to_year(r.get("era"))]
+    year_range = None
+    if use_year_filter and years:
+        min_year, max_year = min(years), max(years)
+        year_range = st.slider("表示年範囲", min_year, max_year, (min_year, max_year))
+
+    kind_selected = None
+    if use_kind_filter:
+        kind_selected = st.multiselect("種別", ["改正", "廃止", "全改"], default=["改正", "廃止", "全改"])
+
+    def record_visible(rec):
+        y = era_to_year(rec.get("era"))
+        if year_range and y is not None:
+            if y < year_range[0] or y > year_range[1]:
+                return False
+        if kind_selected is not None:
+            k = rec.get("kind") or "改正"
+            if k not in kind_selected:
+                return False
+        return True
+
+    filtered_records = [r for r in records if record_visible(r)]
+
     if target_law_name:
         st.caption(f"対象法令: {target_law_name}")
     else:
@@ -233,7 +247,6 @@ if "run" in st.session_state and st.session_state.get("run"):
 """,
             unsafe_allow_html=True,
         )
-        # 目的の法令本文の取得とダウンロード
         target_text = fetch_law_text(st.session_state.get("last_url"))
         if target_text:
             st.download_button(
@@ -251,16 +264,40 @@ if "run" in st.session_state and st.session_state.get("run"):
                     mime="application/pdf",
                 )
 
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns([2.5, 1.5])
 
     with col1:
-        timeline = [f"{r['era']}　{r['title']}" for r in records if r["era"]]
+        timeline = [f"{r['era']}　{r['title']}" for r in filtered_records if r["era"]]
         if timeline:
             st.subheader("改正年表")
             st.text("\n".join(timeline))
+            if show_gap_info:
+                years_sorted = sorted({era_to_year(r.get("era")) for r in filtered_records if era_to_year(r.get("era"))})
+                for i in range(len(years_sorted) - 1):
+                    gap = years_sorted[i + 1] - years_sorted[i]
+                    if gap >= 5:
+                        st.info(f"この期間 {gap}年間改正なし")
             st.divider()
 
-        for rec in records:
+        if show_density:
+            decade_counts = {}
+            for r in filtered_records:
+                y = era_to_year(r.get("era"))
+                if y is None:
+                    continue
+                decade = (y // 10) * 10
+                decade_counts[decade] = decade_counts.get(decade, 0) + 1
+            if decade_counts:
+                st.subheader("この年代は改正集中期")
+                max_count = max(decade_counts.values())
+                for decade in sorted(decade_counts):
+                    st.caption(f"{decade}年代")
+                    st.progress(decade_counts[decade] / max_count)
+                st.divider()
+
+        seen_articles = set()
+
+        for rec in filtered_records:
             kind_label = f"{rec['kind']}：" if rec["kind"] else ""
             st.subheader(rec["era"] or "年不明")
             st.caption(f"{kind_label}{rec['title']}")
@@ -309,18 +346,36 @@ if "run" in st.session_state and st.session_state.get("run"):
                     for a in filtered:
                         lines = a.splitlines()
                         preview = "\n".join(lines[:10])
-                        summary = summarize_amendment(a)
-                        st.info(f"要約: {summary}")
-                        st.markdown(
-                            f"<pre style='white-space: pre-wrap; word-break: break-word; margin: 0;'>{preview}</pre>",
-                            unsafe_allow_html=True,
-                        )
-                        if len(lines) > 10:
-                            with st.expander("全文を表示"):
-                                st.markdown(
-                                    f"<pre style='white-space: pre-wrap; word-break: break-word; margin: 0;'>{a}</pre>",
-                                    unsafe_allow_html=True,
-                                )
+
+                        # 部分改正型の条文コピーは非表示
+
+                        if show_type_tag:
+                            st.caption(f"改正タイプ: {classify_amendment(a)}")
+
+                        if show_first_flag:
+                            nums = extract_article_numbers(a)
+                            new_nums = [n for n in nums if n not in seen_articles]
+                            if new_nums:
+                                st.caption("🆕初出改正")
+                            seen_articles.update(nums)
+
+
+                        if expand_all:
+                            st.markdown(
+                                f"<pre style='white-space: pre-wrap; word-break: break-word; margin: 0;'>{a}</pre>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                f"<pre style='white-space: pre-wrap; word-break: break-word; margin: 0;'>{preview}</pre>",
+                                unsafe_allow_html=True,
+                            )
+                            if len(lines) > 10:
+                                with st.expander("全文を表示"):
+                                    st.markdown(
+                                        f"<pre style='white-space: pre-wrap; word-break: break-word; margin: 0;'>{a}</pre>",
+                                        unsafe_allow_html=True,
+                                    )
                 else:
                     st.info("対象法令名が含まれる条文が見つかりませんでした。")
             else:
@@ -330,9 +385,12 @@ if "run" in st.session_state and st.session_state.get("run"):
                     st.info("改正指示なし")
                 preview = "\n".join(rec["text"].splitlines()[:10])
                 with st.container(border=True):
-                    st.text(preview)
-                    with st.expander("全文を表示"):
+                    if expand_all:
                         st.text(rec["text"])
+                    else:
+                        st.text(preview)
+                        with st.expander("全文を表示"):
+                            st.text(rec["text"])
             st.divider()
 
     with col2:
@@ -348,6 +406,16 @@ if "run" in st.session_state and st.session_state.get("run"):
 
             st.markdown(
                 f"[コトバンクで検索](https://kotobank.jp/word/{quote(target_law_name)})",
+            )
+
+            st.markdown(
+                f"[関連論文（CiNii）](https://cir.nii.ac.jp/all?q={quote(target_law_name)})"
+            )
+            st.markdown(
+                f"[関連論文（J-STAGE）](https://www.jstage.jst.go.jp/result/global/-char/ja?globalSearchKey={quote(target_law_name)})"
+            )
+            st.markdown(
+                f"[国立国会図書館デジタルコレクション 簡易検索](https://dl.ndl.go.jp/search/searchResult?searchWord={quote(target_law_name)})"
             )
 
             egov = build_egov_search_link(target_law_name)

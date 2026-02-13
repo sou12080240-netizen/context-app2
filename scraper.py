@@ -1,5 +1,6 @@
 ﻿import re
 import requests
+import streamlit as st
 from requests import RequestException
 from bs4 import BeautifulSoup, FeatureNotFound
 from urllib.parse import urljoin
@@ -26,6 +27,7 @@ def _clean_law_text(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+@st.cache_data(show_spinner=False)
 def fetch_html(url: str):
     try:
         res = requests.get(url, timeout=10)
@@ -39,10 +41,11 @@ def fetch_html(url: str):
         return None
 
 
+@st.cache_data(show_spinner=False)
 def get_law_history_items(law_url: str):
     """
     Extract history items from the law page.
-    Each item: {"kind": "改正"/"廃止", "url": full_url, "title": link_text}
+    Each item: {"kind": "改正"/"廃止"/"全改", "url": full_url, "title": link_text}
     """
     soup = fetch_html(law_url)
 
@@ -58,6 +61,8 @@ def get_law_history_items(law_url: str):
             label = li.find("span")
             if label:
                 kind = label.get_text(strip=True).replace(":", "").replace("：", "")
+                if kind:
+                    kind = kind.replace("全改", "全改")
             a = li.find("a", href=True)
             if not a:
                 continue
@@ -197,6 +202,7 @@ def search_law_by_name(name: str):
     return uniq
 
 
+@st.cache_data(show_spinner=False)
 def fetch_law_text(url: str) -> str:
     """
     法令データベースページの本文を取得
@@ -294,6 +300,7 @@ def get_law_era_year(url: str):
     return None
 
 
+@st.cache_data(show_spinner=False)
 def get_law_header_info(url: str):
     """
     Extract title, law number, and promulgate date from the law page header.
